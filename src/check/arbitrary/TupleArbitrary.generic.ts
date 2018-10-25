@@ -1,5 +1,6 @@
 import { Random } from '../../random/generator/Random';
 import { Stream } from '../../stream/Stream';
+import { cloneMethod, hasCloneMethod } from '../symbols';
 import { Arbitrary } from './definition/Arbitrary';
 import { Shrinkable } from './definition/Shrinkable';
 
@@ -13,25 +14,49 @@ class GenericTupleArbitrary<Ts> extends Arbitrary<Ts[]> {
         throw new Error(`Invalid parameter encountered at index ${idx}: expecting an Arbitrary`);
     }
   }
+  private static clone<Ts>(vs: Ts[]): Ts[] {
+    const values: Ts[] = [];
+    for (let idx = 0; idx !== vs.length; ++idx) {
+      const v = vs[idx];
+      if (hasCloneMethod(v)) {
+        values.push(v[cloneMethod]());
+      } else {
+        values.push(v);
+      }
+    }
+    return values;
+  }
+  private static cloneIf<Ts>(vs: Ts[], cloneable: boolean): Ts[] {
+    return cloneable ? this.clone(vs) : vs;
+  }
   private static wrapper<Ts>(shrinkables: Shrinkable<Ts>[]): Shrinkable<Ts[]> {
-    return new Shrinkable(shrinkables.map(s => s.value), () =>
-      GenericTupleArbitrary.shrinkImpl(shrinkables).map(GenericTupleArbitrary.wrapper)
+    let cloneable = false;
+    let values: Ts[] = [];
+    for (let idx = 0; idx !== shrinkables.length; ++idx) {
+      const v = shrinkables[idx].value;
+      cloneable = cloneable || hasCloneMethod(v);
+      values.push(v);
+    }
+    if (cloneable) {
+      values = Object.assign(values, { [cloneMethod]: GenericTupleArbitrary.clone });
+    }
+    return new Shrinkable(values, () =>
+      GenericTupleArbitrary.shrinkImpl(cloneable, shrinkables).map(GenericTupleArbitrary.wrapper)
     );
   }
   generate(mrng: Random): Shrinkable<Ts[]> {
     return GenericTupleArbitrary.wrapper(this.arbs.map(a => a.generate(mrng)));
   }
-  private static shrinkImpl<Ts>(value: Shrinkable<Ts>[]): Stream<Shrinkable<Ts>[]> {
+  private static shrinkImpl<Ts>(cloneable: boolean, value: Shrinkable<Ts>[]): Stream<Shrinkable<Ts>[]> {
     // shrinking one by one is the not the most comprehensive
     // but allows a reasonable number of entries in the shrink
     let s = Stream.nil<Shrinkable<Ts>[]>();
     for (let idx = 0; idx !== value.length; ++idx) {
       s = s.join(
         value[idx].shrink().map(v =>
-          value
-            .slice(0, idx)
+          GenericTupleArbitrary.cloneIf(value.slice(0, idx), cloneable)
             .concat([v])
-            .concat(value.slice(idx + 1))
+            .concat(GenericTupleArbitrary.cloneIf(value.slice(idx + 1), cloneable))
         )
       );
     }
